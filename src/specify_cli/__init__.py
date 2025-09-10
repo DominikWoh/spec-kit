@@ -23,7 +23,6 @@ Or install globally:
 """
 
 import os
-import subprocess
 import sys
 import zipfile
 import tempfile
@@ -46,6 +45,25 @@ from typer.core import TyperGroup
 
 # For cross-platform keyboard input
 import readchar
+try:
+    from dotenv import load_dotenv
+except ImportError:  # simple fallback if python-dotenv is not installed
+    def load_dotenv(path: str = ".env"):
+        if not os.path.exists(path):
+            return
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    os.environ.setdefault(key, value)
+
+load_dotenv()
+LM_STUDIO_URL = os.getenv("LM_STUDIO_URL", "http://localhost:1234")
+LM_STUDIO_MODEL = os.getenv("LM_STUDIO_MODEL", "")
+DEFAULT_AI = os.getenv("AI_ASSISTANT")
 
 # Constants
 AI_CHOICES = {
@@ -310,26 +328,6 @@ def callback(ctx: typer.Context):
         console.print(Align.center("[dim]Run 'specify --help' for usage information[/dim]"))
         console.print()
 
-
-def run_command(cmd: list[str], check_return: bool = True, capture: bool = False, shell: bool = False) -> Optional[str]:
-    """Run a shell command and optionally capture output."""
-    try:
-        if capture:
-            result = subprocess.run(cmd, check=check_return, capture_output=True, text=True, shell=shell)
-            return result.stdout.strip()
-        else:
-            subprocess.run(cmd, check=check_return, shell=shell)
-            return None
-    except subprocess.CalledProcessError as e:
-        if check_return:
-            console.print(f"[red]Error running command:[/red] {' '.join(cmd)}")
-            console.print(f"[red]Exit code:[/red] {e.returncode}")
-            if hasattr(e, 'stderr') and e.stderr:
-                console.print(f"[red]Error output:[/red] {e.stderr}")
-            raise
-        return None
-
-
 def check_tool(tool: str, install_hint: str) -> bool:
     """Check if a tool is installed."""
     if shutil.which(tool):
@@ -338,51 +336,6 @@ def check_tool(tool: str, install_hint: str) -> bool:
         console.print(f"[yellow]⚠️  {tool} not found[/yellow]")
         console.print(f"   Install with: [cyan]{install_hint}[/cyan]")
         return False
-
-
-def is_git_repo(path: Path = None) -> bool:
-    """Check if the specified path is inside a git repository."""
-    if path is None:
-        path = Path.cwd()
-    
-    if not path.is_dir():
-        return False
-
-    try:
-        # Use git command to check if inside a work tree
-        subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
-            check=True,
-            capture_output=True,
-            cwd=path,
-        )
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return False
-
-
-def init_git_repo(project_path: Path, quiet: bool = False) -> bool:
-    """Initialize a git repository in the specified path.
-    quiet: if True suppress console output (tracker handles status)
-    """
-    try:
-        original_cwd = Path.cwd()
-        os.chdir(project_path)
-        if not quiet:
-            console.print("[cyan]Initializing git repository...[/cyan]")
-        subprocess.run(["git", "init"], check=True, capture_output=True)
-        subprocess.run(["git", "add", "."], check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "Initial commit from Specify template"], check=True, capture_output=True)
-        if not quiet:
-            console.print("[green]✓[/green] Git repository initialized")
-        return True
-        
-    except subprocess.CalledProcessError as e:
-        if not quiet:
-            console.print(f"[red]Error initializing git repository:[/red] {e}")
-        return False
-    finally:
-        os.chdir(original_cwd)
 
 
 def download_template_from_github(ai_assistant: str, download_dir: Path, *, verbose: bool = True, show_progress: bool = True):
@@ -640,25 +593,23 @@ def init(
     project_name: str = typer.Argument(None, help="Name for your new project directory (optional if using --here)"),
     ai_assistant: str = typer.Option(None, "--ai", help="AI assistant to use: claude, gemini, or copilot"),
     ignore_agent_tools: bool = typer.Option(False, "--ignore-agent-tools", help="Skip checks for AI agent tools like Claude Code"),
-    no_git: bool = typer.Option(False, "--no-git", help="Skip git repository initialization"),
     here: bool = typer.Option(False, "--here", help="Initialize project in the current directory instead of creating a new one"),
 ):
     """
     Initialize a new Specify project from the latest template.
     
     This command will:
-    1. Check that required tools are installed (git is optional)
+    1. Check that required tools are installed
     2. Let you choose your AI assistant (Claude Code, Gemini CLI, or GitHub Copilot)
     3. Download the appropriate template from GitHub
     4. Extract the template to a new project directory or current directory
-    5. Initialize a fresh git repository (if not --no-git and no existing repo)
-    6. Optionally set up AI assistant commands
+    5. Optionally set up AI assistant commands
     
     Examples:
         specify init my-project
         specify init my-project --ai claude
         specify init my-project --ai gemini
-        specify init my-project --ai copilot --no-git
+        specify init my-project --ai copilot
         specify init --ignore-agent-tools my-project
         specify init --here --ai claude
         specify init --here
@@ -705,24 +656,22 @@ def init(
         border_style="cyan"
     ))
     
-    # Check git only if we might need it (not --no-git)
-    git_available = True
-    if not no_git:
-        git_available = check_tool("git", "https://git-scm.com/downloads")
-        if not git_available:
-            console.print("[yellow]Git not found - will skip repository initialization[/yellow]")
-
     # AI assistant selection
     if ai_assistant:
         if ai_assistant not in AI_CHOICES:
             console.print(f"[red]Error:[/red] Invalid AI assistant '{ai_assistant}'. Choose from: {', '.join(AI_CHOICES.keys())}")
             raise typer.Exit(1)
         selected_ai = ai_assistant
+    elif DEFAULT_AI:
+        if DEFAULT_AI not in AI_CHOICES:
+            console.print(f"[red]Error:[/red] Invalid AI assistant '{DEFAULT_AI}'. Choose from: {', '.join(AI_CHOICES.keys())}")
+            raise typer.Exit(1)
+        selected_ai = DEFAULT_AI
     else:
         # Use arrow-key selection interface
         selected_ai = select_with_arrows(
-            AI_CHOICES, 
-            "Choose your AI assistant:", 
+            AI_CHOICES,
+            "Choose your AI assistant:",
             "copilot"
         )
     
@@ -761,7 +710,6 @@ def init(
         ("zip-list", "Archive contents"),
         ("extracted-summary", "Extraction summary"),
         ("cleanup", "Cleanup"),
-        ("git", "Initialize git repository"),
         ("final", "Finalize")
     ]:
         tracker.add(key, label)
@@ -771,22 +719,6 @@ def init(
         tracker.attach_refresh(lambda: live.update(tracker.render()))
         try:
             download_and_extract_template(project_path, selected_ai, here, verbose=False, tracker=tracker)
-
-            # Git step
-            if not no_git:
-                tracker.start("git")
-                if is_git_repo(project_path):
-                    tracker.complete("git", "existing repo detected")
-                elif git_available:
-                    if init_git_repo(project_path, quiet=True):
-                        tracker.complete("git", "initialized")
-                    else:
-                        tracker.error("git", "init failed")
-                else:
-                    tracker.skip("git", "git not available")
-            else:
-                tracker.skip("git", "--no-git flag")
-
             tracker.complete("final", "project ready")
         except Exception as e:
             tracker.error("final", str(e))
@@ -830,8 +762,35 @@ def init(
     steps_panel = Panel("\n".join(steps_lines), title="Next steps", border_style="cyan", padding=(1,2))
     console.print()  # blank line
     console.print(steps_panel)
-    
+
     # Removed farewell line per user request
+@app.command()
+def lm(prompt: str):
+    """Send a prompt to LM Studio and print the response."""
+    if not LM_STUDIO_URL or not LM_STUDIO_MODEL:
+        console.print("[red]LM_STUDIO_URL and LM_STUDIO_MODEL must be set in .env[/red]")
+        raise typer.Exit(1)
+    try:
+        response = httpx.post(
+            f"{LM_STUDIO_URL}/v1/chat/completions",
+            json={
+                "model": LM_STUDIO_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=60,
+        )
+        response.raise_for_status()
+    except httpx.RequestError as e:
+        console.print(f"[red]Error communicating with LM Studio:[/red] {e}")
+        raise typer.Exit(1)
+
+    data = response.json()
+    try:
+        message = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError):
+        console.print("[red]Unexpected response from LM Studio[/red]")
+        raise typer.Exit(1)
+    console.print(message)
 
 
 @app.command()
@@ -849,16 +808,11 @@ def check():
         console.print("[red]✗[/red] No internet connection - required for downloading templates")
         console.print("[yellow]Please check your internet connection[/yellow]")
     
-    console.print("\n[cyan]Optional tools:[/cyan]")
-    git_ok = check_tool("git", "https://git-scm.com/downloads")
-    
     console.print("\n[cyan]Optional AI tools:[/cyan]")
     claude_ok = check_tool("claude", "Install from: https://docs.anthropic.com/en/docs/claude-code/setup")
     gemini_ok = check_tool("gemini", "Install from: https://github.com/google-gemini/gemini-cli")
-    
+
     console.print("\n[green]✓ Specify CLI is ready to use![/green]")
-    if not git_ok:
-        console.print("[yellow]Consider installing git for repository management[/yellow]")
     if not (claude_ok or gemini_ok):
         console.print("[yellow]Consider installing an AI assistant for the best experience[/yellow]")
 
