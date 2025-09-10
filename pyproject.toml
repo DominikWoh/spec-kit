@@ -9,6 +9,7 @@ dependencies = [
     "httpx",
     "platformdirs",
     "readchar",
+    "python-dotenv",
 ]
 
 [project.scripts]
